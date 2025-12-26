@@ -1,182 +1,195 @@
-"""
-A lightweight Python client for the Ollama local/server API.
-
-Features:
-- Basic generate() call (non-streaming) that returns parsed JSON from the API.
-- generate_stream() generator to consume streaming responses (SSE or chunked).
-- Configurable base_url, timeout, and optional API key header.
-- Minimal CLI for quick manual testing.
-
-Note: Ollama's API commonly runs at http://localhost:11434 and exposes /api/generate for model inference. This client is defensive about streaming formats and yields raw chunks or parsed JSON when available.
-"""
-
-from __future__ import annotations
-
+# Step 1: Define tools and model
+from langchain.tools import tool
+from langchain_ollama import ChatOllama
 import json
-import logging
-from typing import Any, Dict, Generator, Iterable, List, Optional, Union
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-import requests
-
-__all__ = ["OllamaClient"]
-
-logger = logging.getLogger(__name__)
-
-DEFAULT_BASE_URL = "http://localhost:11434"
-DEFAULT_TIMEOUT = 60
+# Ollama local model (pick one you have; Ministral is great for agents)
+model = ChatOllama(model="ministral-3:8b", temperature=0)
 
 
-class OllamaAPIError(RuntimeError):
-    pass
+# ---- Tools ----
+@tool
+def multiply(a: int, b: int) -> int:
+    """Multiply `a` and `b`."""
+    return a * b
 
 
-class OllamaClient:
-    """Simple client for interacting with an Ollama server.
+@tool
+def add(a: int, b: int) -> int:
+    """Add `a` and `b`."""
+    return a + b
 
-    Example:
-        client = OllamaClient()
-        resp = client.generate("llama2", "Tell me a joke.")
 
-    Streaming usage:
-        for chunk in client.generate_stream("llama2", "Say hello repeatedly"):
-            print(chunk)
+@tool
+def divide(a: int, b: int) -> float:
+    """Divide `a` by `b`."""
+    return a / b
+
+
+@tool
+def get_current_time(tz: str = "Asia/Kolkata") -> str:
+    """Get the current time in ISO format for a timezone (default: Asia/Kolkata)."""
+    now = datetime.now(ZoneInfo(tz))
+    return now.isoformat(timespec="seconds")
+
+
+@tool
+def search(query: str, top_k: int = 3) -> str:
     """
-
-    def __init__(
-        self,
-        base_url: str = DEFAULT_BASE_URL,
-        api_key: Optional[str] = None,
-        timeout: int = DEFAULT_TIMEOUT,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.session = requests.Session()
-        self.timeout = timeout
-
-        if api_key:
-            # Ollama may support an authorization header if configured behind a proxy
-            self.session.headers.update({"Authorization": f"Bearer {api_key}"})
-
-        # Default to JSON responses
-        self.session.headers.setdefault("Content-Type", "application/json")
-
-    def _endpoint(self, path: str) -> str:
-        return f"{self.base_url}{path}"
-
-    def generate(
-        self,
-        model: str,
-        prompt: Union[str, List[str]],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        stop: Optional[List[str]] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Call the Ollama /api/generate endpoint and return parsed JSON.
-
-        This method makes a blocking request and returns the full result.
-        """
-        url = self._endpoint("/api/generate")
-        payload: Dict[str, Any] = {"model": model, "prompt": prompt}
-
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if top_p is not None:
-            payload["top_p"] = top_p
-        if stop is not None:
-            payload["stop"] = stop
-
-        payload.update(kwargs)
-
-        logger.debug("POST %s payload=%s", url, payload)
-
-        try:
-            resp = self.session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            logger.exception("Request to Ollama failed")
-            raise OllamaAPIError(f"request failed: {exc}") from exc
-
-        try:
-            return resp.json()
-        except ValueError:
-            # Non-JSON response
-            raise OllamaAPIError("non-JSON response from Ollama server")
-
-    def generate_stream(
-        self,
-        model: str,
-        prompt: Union[str, List[str]],
-        **kwargs: Any,
-    ) -> Generator[Union[str, Dict[str, Any]], None, None]:
-        """Stream a response from the Ollama /api/generate endpoint.
-
-        Yields raw text chunks or parsed JSON objects when lines are JSON.
-        This function is defensive: it supports SSE-like lines (e.g. starting with "data: ")
-        and plain chunked text. Consumers should handle both strings and dicts.
-        """
-        url = self._endpoint("/api/generate")
-        payload: Dict[str, Any] = {"model": model, "prompt": prompt}
-        payload.update(kwargs)
-
-        logger.debug("POST %s (stream) payload=%s", url, payload)
-
-        try:
-            with self.session.post(url, json=payload, stream=True, timeout=self.timeout) as resp:
-                resp.raise_for_status()
-
-                for raw_line in resp.iter_lines(decode_unicode=True):
-                    if raw_line is None:
-                        continue
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-
-                    # Ollama may use SSE style lines like "data: {...}"
-                    if line.startswith("data:"):
-                        data = line[len("data:"):].strip()
-                        # Some SSE streams send a single "[DONE]" or similar sentinel
-                        if data in ("[DONE]", "done"):
-                            break
-
-                        try:
-                            yield json.loads(data)
-                        except Exception:
-                            # If parsing fails, return the raw data string
-                            yield data
-                    else:
-                        # Try to parse JSON chunk, otherwise yield as text
-                        try:
-                            yield json.loads(line)
-                        except Exception:
-                            yield line
-        except requests.RequestException as exc:
-            logger.exception("Streaming request to Ollama failed")
-            raise OllamaAPIError(f"streaming request failed: {exc}") from exc
+    Return SAMPLE search results (stub) as JSON.
+    Replace this with a real search API later if you want live results.
+    """
+    # Sample results (hardcoded) — good for demo/testing agent loops
+    sample = [
+        {
+            "title": "LangGraph Quickstart (Docs by LangChain)",
+            "url": "https://docs.langchain.com/oss/python/langgraph/quickstart",
+            "snippet": "Build a calculator agent using the LangGraph Graph API with tools + a loop.",
+        },
+        {
+            "title": "Ollama Tool Calling",
+            "url": "https://docs.ollama.com/capabilities/tool-calling",
+            "snippet": "Ollama supports tool calling (function calling) and multi-turn agent loops.",
+        },
+        {
+            "title": "LangChain Ollama Integration Reference",
+            "url": "https://reference.langchain.com/python/integrations/langchain_ollama/",
+            "snippet": "ChatOllama supports binding tools for tool-calling compatible Ollama models.",
+        },
+    ]
+    return json.dumps(
+        {"query": query, "top_k": top_k, "results": sample[:top_k]}, indent=2
+    )
 
 
-if __name__ == "__main__":
-    import argparse
+# Augment the LLM with tools (same idea as quickstart)
+tools = [add, multiply, divide, get_current_time, search]
+tools_by_name = {t.name: t for t in tools}
+model_with_tools = model.bind_tools(tools)
 
-    parser = argparse.ArgumentParser(description="Simple Ollama API client CLI")
-    parser.add_argument("model", help="Model name to use")
-    parser.add_argument("prompt", help="Prompt text")
-    parser.add_argument("--stream", action="store_true", help="Stream the response")
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Ollama server base URL")
-    args = parser.parse_args()
+# Step 2: Define state
+from langchain.messages import AnyMessage
+from typing_extensions import TypedDict, Annotated
+import operator
 
-    logging.basicConfig(level=logging.INFO)
-    client = OllamaClient(base_url=args.base_url)
 
-    if args.stream:
-        for chunk in client.generate_stream(args.model, args.prompt):
-            # print raw chunk or JSON prettified
-            if isinstance(chunk, dict):
-                print(json.dumps(chunk, ensure_ascii=False))
-            else:
-                print(chunk)
-    else:
-        resp = client.generate(args.model, args.prompt)
-        print(json.dumps(resp, indent=2, ensure_ascii=False))
+class MessagesState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+    llm_calls: int
+
+
+# Step 3: Define model node
+from langchain.messages import SystemMessage
+
+
+def llm_call(state: dict):
+    """LLM decides whether to call a tool or not"""
+    return {
+        "messages": [
+            model_with_tools.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are a helpful assistant.\n"
+                            "- Use tools when needed.\n"
+                            "- For math, use add/multiply/divide.\n"
+                            "- For time, use get_current_time.\n"
+                            "- For searching, use search.\n"
+                            "If you call a tool, wait for the tool result before answering."
+                        )
+                    )
+                ]
+                + state["messages"]
+            )
+        ],
+        "llm_calls": state.get("llm_calls", 0) + 1,
+    }
+
+
+# Step 4: Define tool node
+from langchain.messages import ToolMessage
+
+
+def tool_node(state: dict):
+    """Performs the tool call"""
+    result = []
+    last = state["messages"][-1]
+
+    for tool_call in last.tool_calls:
+        tool_fn = tools_by_name[tool_call["name"]]
+        observation = tool_fn.invoke(tool_call["args"])
+
+        # ToolMessage content should be a string
+        result.append(
+            ToolMessage(content=str(observation), tool_call_id=tool_call["id"])
+        )
+    return {"messages": result}
+
+
+# Step 5: Define logic to determine whether to end
+from typing import Literal
+from langgraph.graph import StateGraph, START, END
+
+
+def should_continue(state: MessagesState) -> Literal["tool_node", END]:
+    """Route to tool node if LLM made a tool call; else end."""
+    last_message = state["messages"][-1]
+    if last_message.tool_calls:
+        return "tool_node"
+    return END
+
+
+# Step 6: Build and compile the agent
+agent_builder = StateGraph(MessagesState)
+agent_builder.add_node("llm_call", llm_call)
+agent_builder.add_node("tool_node", tool_node)
+
+agent_builder.add_edge(START, "llm_call")
+agent_builder.add_conditional_edges("llm_call", should_continue, ["tool_node", END])
+agent_builder.add_edge("tool_node", "llm_call")
+
+agent = agent_builder.compile()
+
+# Invoke (demo)
+from langchain.messages import HumanMessage
+
+messages = [
+    HumanMessage(
+        content=(
+            "1) What time is it right now in India?\n"
+            "2) Search: 'LangGraph Quickstart full code example' and summarize in 1 line.\n"
+            "3) Also compute: (11434 + 12341) * 2."
+        )
+    )
+]
+
+out = agent.invoke({"messages": messages})
+
+print("\n" + "=" * 40)
+print("  Conversation Transcript")
+print("=" * 40)
+
+for m in out["messages"]:
+    # Check string representation or type to identify message role
+    msg_type = m.type
+    content = m.content
+
+    if msg_type == "human":
+        print(f"\n👤 USER:\n{content}")
+    elif msg_type == "ai":
+        if m.tool_calls:
+            for tc in m.tool_calls:
+                print(
+                    f"\n🤖 AGENT (Thinking):\nCalling tool '{tc['name']}' with {tc['args']}"
+                )
+        else:
+            print("\n" + "=" * 70)
+            print("\n" + "=" * 70)
+            print(f"\n🤖 AGENT:\n{content}")
+    elif msg_type == "tool":
+        print(f"\n🛠️  TOOL OUTPUT:\n{content}")
+
+print("\n" + "=" * 70)
+print(f"Total LLM calls: {out.get('llm_calls')}")
